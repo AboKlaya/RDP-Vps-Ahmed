@@ -1,61 +1,58 @@
-name: Windows RDP via Ngrok
+name: Linux RDP via Ngrok
 
 on: [push, workflow_dispatch]
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 9999
 
     steps:
-    - name: Download Ngrok v3
+    - name: Install xfce4 and xrdp
       run: |
-        Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile ngrok.zip
-        Expand-Archive ngrok.zip -DestinationPath .
-        Move-Item .\ngrok.exe C:\ngrok.exe
+        sudo apt update
+        sudo apt install -y xfce4 xfce4-goodies xrdp wget
+        sudo systemctl enable xrdp
+        sudo systemctl start xrdp
 
-    - name: Authenticate Ngrok
+    - name: Set password for user
+      run: echo 'ubuntu:cyb3rking' | sudo chpasswd
+
+    - name: Add user to xrdp group
+      run: sudo adduser ubuntu xrdp
+
+    - name: Download ngrok
+      run: |
+        wget https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz -O ngrok.tgz
+        tar -xvzf ngrok.tgz
+        sudo mv ngrok /usr/local/bin/ngrok
+        chmod +x /usr/local/bin/ngrok
+
+    - name: Auth with ngrok
       env:
         NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
-      run: |
-        & C:\ngrok.exe config add-authtoken $env:NGROK_AUTH_TOKEN
+      run: ngrok config add-authtoken $NGROK_AUTH_TOKEN
 
-    - name: Enable RDP Access
+    - name: Start ngrok TCP tunnel
       run: |
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
+        nohup ngrok tcp 3389 > ngrok.log &
+        sleep 15
+        curl -s http://127.0.0.1:4040/api/tunnels > tunnels.json
+        cat tunnels.json
 
-    - name: Set RDP Password
-      run: Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "@cyb3rking" -Force)
-
-    - name: Start Ngrok Tunnel and Keep Session Alive
-      env:
-        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+    - name: Extract RDP address
       run: |
-        echo "Starting ngrok..."
-        Start-Process -FilePath "C:\ngrok.exe" -ArgumentList "tcp 3389"
-        Start-Sleep -Seconds 15
-        $try = 0
-        while ($true) {
-          try {
-            $tunnels = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels"
-            $rdp = $tunnels.tunnels[0].public_url -replace "tcp://", ""
-            echo "=============================================="
-            echo "✅ RDP Info:"
-            echo "IP:PORT => $rdp"
-            echo "Username => runneradmin"
-            echo "Password => @cyb3rking"
-            echo "=============================================="
-            break
-          } catch {
-            if ($try -gt 10) { throw "Failed to get ngrok tunnel after multiple attempts." }
-            Start-Sleep -Seconds 5
-            $try++
-          }
-        }
-        # إبقاء الاتصال حي لمدة 6 ساعات تقريبًا
-        for ($i = 0; $i -lt 360; $i++) {
-          Write-Host ">> Session alive for $i minutes"
-          Start-Sleep -Seconds 60
-        }
+        RDP_ADDR=$(cat tunnels.json | grep -oP '(?<=tcp://)[^"]+')
+        echo "========================================="
+        echo "✅ RDP Info:"
+        echo "IP:PORT => $RDP_ADDR"
+        echo "Username => ubuntu"
+        echo "Password => cyb3rking"
+        echo "========================================="
+
+    - name: Keep session alive
+      run: |
+        for ((i=0; i<360; i++)); do
+          echo ">> Session alive for $i minutes"
+          sleep 60
+        done
